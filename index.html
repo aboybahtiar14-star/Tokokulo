@@ -22,93 +22,97 @@
     <!-- HTML5 QR Code Scanner -->
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 
-    <!-- Firebase SDK (Modular) -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, collection, onSnapshot, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    <!-- Supabase JS SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-        window.firebaseDB = null;
-        window.firebaseAuth = null;
-        window.cloudUser = null;
-        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'tokokulo-pos-store';
+    <script>
+        // Masukkan URL dan Anon Key Supabase Anda di sini
+        window.supabaseUrl = typeof __supabase_url !== 'undefined' ? __supabase_url : 'https://YOUR_SUPABASE_PROJECT.supabase.co';
+        window.supabaseAnonKey = typeof __supabase_key !== 'undefined' ? __supabase_key : 'YOUR_SUPABASE_ANON_KEY';
+        window.supabaseClient = null;
 
-        window.initFirebaseSync = async function() {
+        window.initSupabaseSync = async function() {
             try {
-                const firebaseConfig = typeof __firebase_config !== 'undefined' 
-                    ? JSON.parse(__firebase_config) 
-                    : { apiKey: "demo-key", authDomain: "demo.firebaseapp.com", projectId: "demo-project" };
-
-                const app = initializeApp(firebaseConfig);
-                const auth = getAuth(app);
-                const db = getFirestore(app);
-
-                window.firebaseDB = db;
-                window.firebaseAuth = auth;
-
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    const cred = await signInWithCustomToken(auth, __initial_auth_token);
-                    window.cloudUser = cred.user;
-                } else {
-                    const cred = await signInAnonymously(auth);
-                    window.cloudUser = cred.user;
+                if (!window.supabaseUrl || window.supabaseUrl.includes('YOUR_SUPABASE_PROJECT')) {
+                    updateCloudStatusUI(false);
+                    return;
                 }
 
-                if (!window.cloudUser) return;
+                const { createClient } = window.supabase;
+                window.supabaseClient = createClient(window.supabaseUrl, window.supabaseAnonKey);
+
                 updateCloudStatusUI(true);
 
-                const productsCol = collection(db, 'artifacts', window.appId, 'public', 'data', 'products');
-                const transCol = collection(db, 'artifacts', window.appId, 'public', 'data', 'transactions');
+                // Fetch data awal produk
+                const { data: initialProducts } = await window.supabaseClient.from('products').select('*');
+                if (initialProducts && initialProducts.length > 0) {
+                    window.products = initialProducts;
+                    localStorage.setItem('tokokulo_products', JSON.stringify(window.products));
+                    if (window.updateAllViews) window.updateAllViews();
+                }
 
-                onSnapshot(productsCol, (snapshot) => {
-                    if (snapshot.metadata.hasPendingWrites) return;
-                    const cloudProds = [];
-                    snapshot.forEach(doc => cloudProds.push(doc.data()));
-                    if (cloudProds.length > 0) {
-                        window.products = cloudProds;
-                        localStorage.setItem('tokokulo_products', JSON.stringify(window.products));
-                        if (window.updateAllViews) window.updateAllViews();
-                    }
-                }, (error) => console.warn("Sync error:", error));
+                // Fetch data awal transaksi
+                const { data: initialTrans } = await window.supabaseClient.from('transactions').select('*');
+                if (initialTrans && initialTrans.length > 0) {
+                    window.transactions = initialTrans;
+                    localStorage.setItem('tokokulo_transactions', JSON.stringify(window.transactions));
+                    if (window.updateAllViews) window.updateAllViews();
+                }
 
-                onSnapshot(transCol, (snapshot) => {
-                    if (snapshot.metadata.hasPendingWrites) return;
-                    const cloudTrans = [];
-                    snapshot.forEach(doc => cloudTrans.push(doc.data()));
-                    if (cloudTrans.length > 0) {
-                        window.transactions = cloudTrans;
-                        localStorage.setItem('tokokulo_transactions', JSON.stringify(window.transactions));
-                        if (window.updateAllViews) window.updateAllViews();
-                    }
-                }, (error) => console.warn("Sync error:", error));
+                // Listener Realtime
+                window.supabaseClient
+                    .channel('schema-db-changes')
+                    .on(
+                        'postgres_changes',
+                        { event: '*', schema: 'public', table: 'products' },
+                        async () => {
+                            const { data } = await window.supabaseClient.from('products').select('*');
+                            if (data) {
+                                window.products = data;
+                                localStorage.setItem('tokokulo_products', JSON.stringify(window.products));
+                                if (window.updateAllViews) window.updateAllViews();
+                            }
+                        }
+                    )
+                    .on(
+                        'postgres_changes',
+                        { event: '*', schema: 'public', table: 'transactions' },
+                        async () => {
+                            const { data } = await window.supabaseClient.from('transactions').select('*');
+                            if (data) {
+                                window.transactions = data;
+                                localStorage.setItem('tokokulo_transactions', JSON.stringify(window.transactions));
+                                if (window.updateAllViews) window.updateAllViews();
+                            }
+                        }
+                    )
+                    .subscribe();
 
             } catch (err) {
+                console.error("Supabase sync error:", err);
                 updateCloudStatusUI(false);
             }
         };
 
         window.syncProductToCloud = async function(product) {
-            if (!window.firebaseDB || !window.cloudUser) return;
+            if (!window.supabaseClient) return;
             try {
-                const prodRef = doc(window.firebaseDB, 'artifacts', window.appId, 'public', 'data', 'products', product.id);
-                await setDoc(prodRef, product);
-            } catch (e) { console.error(e); }
+                await window.supabaseClient.from('products').upsert(product);
+            } catch (e) { console.error("Cloud prod sync error:", e); }
         };
 
         window.deleteProductFromCloud = async function(productId) {
-            if (!window.firebaseDB || !window.cloudUser) return;
+            if (!window.supabaseClient) return;
             try {
-                const prodRef = doc(window.firebaseDB, 'artifacts', window.appId, 'public', 'data', 'products', productId);
-                await deleteDoc(prodRef);
-            } catch (e) { console.error(e); }
+                await window.supabaseClient.from('products').delete().eq('id', productId);
+            } catch (e) { console.error("Cloud prod delete error:", e); }
         };
 
         window.syncTransactionToCloud = async function(transaction) {
-            if (!window.firebaseDB || !window.cloudUser) return;
+            if (!window.supabaseClient) return;
             try {
-                const transRef = doc(window.firebaseDB, 'artifacts', window.appId, 'public', 'data', 'transactions', transaction.id);
-                await setDoc(transRef, transaction);
-            } catch (e) { console.error(e); }
+                await window.supabaseClient.from('transactions').upsert(transaction);
+            } catch (e) { console.error("Cloud trans sync error:", e); }
         };
 
         function updateCloudStatusUI(isOnline) {
@@ -116,11 +120,11 @@
             const mobileBadge = document.getElementById('mobileCloudBadge');
             if (badge) {
                 badge.innerHTML = isOnline 
-                    ? `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Multi-Device Sync`
+                    ? `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Supabase Sync`
                     : `<span class="w-2 h-2 rounded-full bg-amber-400"></span> Mode Lokal`;
             }
             if (mobileBadge) {
-                mobileBadge.textContent = isOnline ? "Online Sync" : "Lokal";
+                mobileBadge.textContent = isOnline ? "Supabase Sync" : "Lokal";
             }
         }
     </script>
@@ -229,7 +233,7 @@
             <div class="flex items-center justify-between text-xs text-slate-400 mb-3 px-1">
                 <span class="font-medium">Status Database:</span>
                 <span id="cloudSyncBadge" class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Multi-Device Sync
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Supabase Sync
                 </span>
             </div>
             <button onclick="openBackupModal()" class="w-full py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center justify-center gap-2 transition-colors">
@@ -247,7 +251,7 @@
             <div>
                 <h1 class="font-bold text-base leading-tight">TokoKulo</h1>
                 <p class="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> <span id="mobileCloudBadge">Online Sync</span>
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> <span id="mobileCloudBadge">Supabase Sync</span>
                 </p>
             </div>
         </div>
@@ -1597,8 +1601,8 @@
 
             window.updateAllViews();
 
-            if (window.initFirebaseSync) {
-                window.initFirebaseSync();
+            if (window.initSupabaseSync) {
+                window.initSupabaseSync();
             }
         };
     </script>
